@@ -84,17 +84,27 @@ RUN gcs-pypi --bucket gs://my-pypi/packages -- pip install --no-cache-dir -r req
 
 ## Install from a wheel
 
-`make wheel` builds `gcs_pypi_proxy-<version>-py3-none-manylinux_2_17_x86_64.whl`. It contains
-only the binary, so it works with any Python version on any x86_64 Linux with glibc 2.17 or
-newer. The distribution is called `gcs-pypi-proxy`, because `gcs-pypi` on PyPI is an unrelated
-project; the command is still `gcs-pypi`.
+`make wheel` builds one wheel per platform, e.g.
+`gcs_pypi_proxy-<version>-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`:
+
+| Platform | Wheel tag |
+|---|---|
+| Linux x86_64 / aarch64, glibc 2.17+ | `manylinux_2_17_{x86_64,aarch64}` |
+| Linux x86_64 / aarch64, musl (Alpine) | `musllinux_1_2_{x86_64,aarch64}` |
+| macOS Intel, 10.12+ | `macosx_10_12_x86_64` |
+| macOS Apple silicon, 11+ | `macosx_11_0_arm64` |
+
+A wheel contains only the binary, so it works with any Python version. Upload all of them to the
+same place and pip or uv picks the one that matches the machine. The distribution is called
+`gcs-pypi-proxy`, because `gcs-pypi` on PyPI is an unrelated project; the command is still
+`gcs-pypi`.
 
 In a running container:
 
 ```bash
-gcloud storage cp gs://my-pypi/tools/gcs_pypi_proxy-0.2.0-py3-none-manylinux_2_17_x86_64.whl .
-pip install ./gcs_pypi_proxy-0.2.0-py3-none-manylinux_2_17_x86_64.whl
-# or: uv tool install ./gcs_pypi_proxy-0.2.0-py3-none-manylinux_2_17_x86_64.whl
+gcloud storage cp 'gs://my-pypi/tools/gcs_pypi_proxy-0.2.0-*.whl' wheels/
+pip install --no-index --find-links wheels/ gcs-pypi-proxy==0.2.0
+# or: uv tool install --no-index --find-links wheels/ gcs-pypi-proxy==0.2.0
 
 eval "$(gcs-pypi --bucket gs://my-pypi/packages --daemon)"
 pip install my-private-lib
@@ -148,29 +158,30 @@ default = true
 | `make test` | run the unit tests |
 | `make fmt` | apply `clippy --fix`, then `cargo fmt` |
 | `make lint` | `cargo fmt --check` and `cargo clippy -D warnings`; fails on any warning |
-| `make dist` | `clean`, `lint`, `test`, then an optimized build copied to `dist/gcs-pypi-<commit>-<target>` |
-| `make wheel` | `clean`, `lint`, `test`, then the manylinux wheel in `dist/` |
+| `make dist` | `clean`, `lint`, `test`, then optimized binaries copied to `dist/gcs-pypi-<commit>-<target>` |
+| `make wheel` | `clean`, `lint`, `test`, then the wheels in `dist/` |
+| `make dist-all` | `clean`, `lint`, `test`, then the binaries and the wheels in `dist/` |
 | `make clean` | `cargo clean` and remove `dist/` |
 
-`make dist` builds for `x86_64-unknown-linux-musl` by default. That needs a Linux host with
-the target and the musl toolchain:
+Both build for Linux x86_64 and aarch64 and for macOS x86_64 and arm64. `make dist` builds
+fully static musl binaries for Linux, so one binary per architecture runs on any distro.
+`make wheel` builds manylinux2014 and musllinux_1_2 wheels for Linux and native macOS wheels.
+
+Linux targets are cross-compiled with zig (cargo-zigbuild for `dist`, maturin for `wheel`) on
+Linux and macOS hosts alike. macOS targets link against the macOS SDK, so they build only on a
+Mac. Elsewhere, pick the targets yourself:
 
 ```bash
-rustup target add x86_64-unknown-linux-musl
-sudo apt-get install musl-tools
+make dist DIST_TARGETS="x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
+make wheel WHEEL_TARGETS="x86_64-unknown-linux-gnu"
 ```
 
-To build for another target, e.g. the host on macOS: `make dist DIST_TARGET=aarch64-apple-darwin`.
-
-`make wheel` cross-compiles with zig via maturin, on Linux and macOS alike. It needs `uv`
-(maturin and zig are fetched by `uvx`, at the versions pinned in the Makefile) and the Rust target:
-
-```bash
-rustup target add x86_64-unknown-linux-gnu
-```
+Only `uv` needs to be installed: `uvx` fetches cargo-zigbuild, maturin and zig at the versions
+pinned in the Makefile. `rust-toolchain.toml` lists all targets, so rustup installs them on the
+first build. `make dist` and `make wheel` both start with `make clean`, which empties `dist/`;
+run `make dist-all` to get the binaries and the wheels together.
 
 The version comes from `Cargo.toml`; bump it there before building a wheel to hand out.
-`WHEEL_TARGET=aarch64-unknown-linux-gnu` builds an arm64 wheel (after `rustup target add` for it).
 
 The toolchain (stable, with rustfmt and clippy) is pinned in `rust-toolchain.toml`. To skip the
 reformat commit in `git blame`, run `git config blame.ignoreRevsFile .git-blame-ignore-revs`.
