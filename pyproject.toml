@@ -7,6 +7,7 @@ build-backend = "maturin"
 # an unrelated project.
 name = "gcs-pypi-proxy"
 description = "Serve a GCS bucket of wheels/sdists as a local PEP 503 index for pip and uv"
+authors = [{ name = "Joachim Bargsten", email = "jw@bargsten.org" }]
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.8"
