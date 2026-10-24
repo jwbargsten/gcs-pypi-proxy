@@ -1,4 +1,4 @@
-.PHONY: build test fmt lint dist wheel dist-all build-binaries build-wheels clean help
+.PHONY: build test fmt lint dist wheel dist-all build-binaries build-wheels publish clean help
 
 .DEFAULT_GOAL := help
 
@@ -14,6 +14,7 @@ WHEEL_TARGETS ?= x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
 MATURIN_VERSION = 1.15.0
 ZIGLANG_VERSION = 0.16.0
 CARGO_ZIGBUILD_VERSION = 0.23.4
+TWINE_VERSION = 6.1.0
 
 # Linux targets cross-compile with zig from Linux and macOS hosts alike.
 ZIGBUILD = uvx --with ziglang==$(ZIGLANG_VERSION) cargo-zigbuild@$(CARGO_ZIGBUILD_VERSION) zigbuild
@@ -59,6 +60,12 @@ build-wheels:
 			*) echo "unsupported wheel target: $$t" >&2; exit 1 ;; \
 		esac; \
 	done
+
+# Uploads what `make wheel` left in ./dist without rebuilding, so a failed upload can be retried.
+# Only the wheels: the raw binaries in ./dist are not Python distributions.
+publish: ## check and upload the wheels in ./dist to PyPI (run release.sh instead)
+	uvx twine@$(TWINE_VERSION) check --strict dist/*.whl
+	uvx twine@$(TWINE_VERSION) upload dist/*.whl
 
 clean: ## clean and remove dist dir
 	cargo clean
