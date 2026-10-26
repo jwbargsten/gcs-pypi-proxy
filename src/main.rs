@@ -10,6 +10,7 @@
 mod auth;
 mod daemon;
 mod index;
+mod pidfile;
 mod server;
 mod shellenv;
 
@@ -17,7 +18,10 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use tokio::sync::Mutex;
+use tokio::{
+    signal::unix::{SignalKind, signal},
+    sync::Mutex,
+};
 
 use crate::{
     auth::{Auth, AuthMode},
@@ -32,7 +36,7 @@ use crate::{
     after_help = "With a command after `--`, the server starts on a free port, PIP_INDEX_URL and \
                   UV_DEFAULT_INDEX are set for the command, and the server stops when it exits.\n\
                   Without a command, the server runs until interrupted, or in the background with \
-                  --daemon.",
+                  --daemon; point the shell at it with `eval \"$(gcs-pypi env)\"`.",
     subcommand_negates_reqs = true
 )]
 struct Args {
@@ -43,9 +47,10 @@ struct Args {
     #[arg(long, env = "GCS_PYPI_BUCKET", required = true)]
     bucket: Option<String>,
 
-    /// Address to listen on (port 0 picks a free port)
-    #[arg(long, env = "GCS_PYPI_ADDR", default_value = "127.0.0.1:0")]
-    addr: SocketAddr,
+    /// Address to listen on (port 0 picks a free port) [default: 127.0.0.1:8765, or a free
+    /// port on 127.0.0.1 with a command]
+    #[arg(long, env = "GCS_PYPI_ADDR")]
+    addr: Option<SocketAddr>,
 
     /// Simple index to redirect to for projects NOT in the bucket ("none" to disable).
     /// Projects that exist in the bucket are never looked up upstream.
@@ -72,14 +77,19 @@ struct Args {
     #[arg(long, short)]
     verbose: bool,
 
-    /// Serve in the background: return once the server is ready, printing a shell snippet for
-    /// `eval` that also sets GCS_PYPI_PID (stop it with `kill $GCS_PYPI_PID`)
+    /// Serve in the background and return once the server is ready, printing its URL (stop it
+    /// with `kill "$(cat <pid file>)"`)
     #[arg(long, conflicts_with = "command")]
     daemon: bool,
 
     /// Where the background server logs (with --daemon) [default: <temp dir>/gcs-pypi.log]
     #[arg(long, env = "GCS_PYPI_LOG_FILE")]
     log_file: Option<PathBuf>,
+
+    /// Write the server's PID here, and refuse to start while that process runs [default with
+    /// --daemon: <temp dir>/gcs-pypi.pid, otherwise none]
+    #[arg(long, env = "GCS_PYPI_PID_FILE", conflicts_with = "command")]
+    pid_file: Option<PathBuf>,
 
     /// Command to run with the index configured
     #[arg(last = true)]
@@ -92,10 +102,13 @@ enum Cmd {
     /// systemd service: eval "$(gcs-pypi env)"
     Env {
         /// Address the server listens on
-        #[arg(long, env = "GCS_PYPI_ADDR", default_value = "127.0.0.1:8765")]
+        #[arg(long, env = "GCS_PYPI_ADDR", default_value = DEFAULT_ADDR)]
         addr: SocketAddr,
     },
 }
+
+/// Where a server without a command listens, and where `env` points.
+const DEFAULT_ADDR: &str = "127.0.0.1:8765";
 
 fn parse_bucket(spec: &str) -> Result<(String, String)> {
     let rest = spec.strip_prefix("gs://").unwrap_or(spec).trim_matches('/');
@@ -118,17 +131,30 @@ async fn main() -> Result<()> {
         if addr.port() == 0 {
             bail!("env: --addr needs the server's port, not 0");
         }
-        print!("{}", shellenv::snippet(&shellenv::index_url(addr), None));
+        print!("{}", shellenv::snippet(&shellenv::index_url(addr)));
         return Ok(());
     }
     // Required by clap unless a subcommand is given.
     let (bucket, prefix) = parse_bucket(args.bucket.as_deref().context("--bucket is required")?)?;
+    let addr = match args.addr {
+        Some(a) => a,
+        None if args.command.is_empty() => DEFAULT_ADDR.parse()?,
+        None => "127.0.0.1:0".parse()?,
+    };
+    let pid_file = match args.pid_file {
+        Some(p) => Some(p),
+        None if args.daemon => Some(std::env::temp_dir().join("gcs-pypi.pid")),
+        None => None,
+    };
     if args.daemon && !daemon::is_child() {
         let log_file = args
             .log_file
             .unwrap_or_else(|| std::env::temp_dir().join("gcs-pypi.log"));
-        return daemon::spawn(&log_file);
+        // The child resolves the same default pid file, from the same args and environment.
+        return daemon::spawn(&log_file, pid_file.as_deref().context("--daemon has a pid file")?);
     }
+    // Held until main returns; removed on Ctrl-C, SIGTERM and failed starts.
+    let _pid_file = pid_file.as_deref().map(pidfile::PidFile::create).transpose()?;
     let upstream = match args.upstream.as_str() {
         "" | "none" => None,
         u => Some(if u.ends_with('/') {
@@ -155,7 +181,7 @@ async fn main() -> Result<()> {
 
     let app = server::router(state.clone());
 
-    let listener = tokio::net::TcpListener::bind(args.addr).await?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
     let addr = listener.local_addr()?;
     let url = shellenv::index_url(addr);
     eprintln!(
@@ -167,13 +193,14 @@ async fn main() -> Result<()> {
 
     if args.command.is_empty() {
         if daemon::is_child() {
+            // Tells the waiting parent the server is ready.
             println!("{url}");
-        } else {
-            print!("{}", shellenv::snippet(&url, None));
         }
+        let mut sigterm = signal(SignalKind::terminate())?;
         tokio::select! {
             r = server => r??,
             _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm.recv() => {}
         }
         return Ok(());
     }
@@ -240,6 +267,18 @@ mod tests {
     #[test]
     fn serving_needs_bucket() {
         assert!(Args::try_parse_from(["gcs-pypi"]).is_err());
+    }
+
+    #[test]
+    fn pid_file_conflicts_with_command() {
+        assert!(
+            Args::try_parse_from(["gcs-pypi", "--bucket", "gs://b", "--pid-file", "p", "--", "pip"]).is_err()
+        );
+    }
+
+    #[test]
+    fn default_addr_parses() {
+        DEFAULT_ADDR.parse::<SocketAddr>().unwrap();
     }
 
     #[test]

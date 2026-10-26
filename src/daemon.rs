@@ -10,8 +10,6 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use crate::shellenv;
-
 /// Set for the detached child, so it serves in the foreground instead of spawning again.
 const CHILD_ENV: &str = "GCS_PYPI_DAEMON_CHILD";
 
@@ -19,9 +17,9 @@ pub fn is_child() -> bool {
     std::env::var_os(CHILD_ENV).is_some()
 }
 
-/// Start the server in the background and print the shell snippet (plus `GCS_PYPI_PID`) once it
-/// is ready. If it fails to start, its log output is copied to stderr and an error is returned.
-pub fn spawn(log_file: &Path) -> Result<()> {
+/// Start the server in the background and print its URL once it is ready. The child writes
+/// `pid_file` itself. If it fails to start, its log output is copied to stderr and an error is returned.
+pub fn spawn(log_file: &Path, pid_file: &Path) -> Result<()> {
     let log = OpenOptions::new()
         .create(true)
         .append(true)
@@ -60,10 +58,11 @@ pub fn spawn(log_file: &Path) -> Result<()> {
         );
     };
 
-    print!("{}", shellenv::snippet(&url, Some(child.id())));
+    println!("gcs-pypi: started server at {url}");
     eprintln!(
-        "gcs-pypi: running in background (pid {}), log: {}",
+        "gcs-pypi: running in background (pid {}), pid file: {}, log: {}",
         child.id(),
+        pid_file.display(),
         log_file.display()
     );
     Ok(())

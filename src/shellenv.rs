@@ -7,17 +7,13 @@ pub fn index_url(addr: SocketAddr) -> String {
 }
 
 /// POSIX shell lines for `eval "$(...)"`. Values are quoted: an IPv6 `[::1]` would otherwise glob.
-pub fn snippet(url: &str, pid: Option<u32>) -> String {
+pub fn snippet(url: &str) -> String {
     let url = quote(url);
-    let mut s = format!(
+    format!(
         "export PIP_INDEX_URL={url}\n\
          export UV_DEFAULT_INDEX={url}\n\
          unset UV_INDEX_URL  # deprecated alias; would conflict with UV_DEFAULT_INDEX\n"
-    );
-    if let Some(pid) = pid {
-        s.push_str(&format!("export GCS_PYPI_PID={pid}\n"));
-    }
-    s
+    )
 }
 
 fn quote(s: &str) -> String {
@@ -38,18 +34,13 @@ mod tests {
     }
 
     #[test]
-    fn snippet_without_pid() {
+    fn snippet_quotes_url() {
         assert_eq!(
-            snippet("http://[::1]:1/simple/", None),
+            snippet("http://[::1]:1/simple/"),
             "export PIP_INDEX_URL='http://[::1]:1/simple/'\n\
              export UV_DEFAULT_INDEX='http://[::1]:1/simple/'\n\
              unset UV_INDEX_URL  # deprecated alias; would conflict with UV_DEFAULT_INDEX\n"
         );
-    }
-
-    #[test]
-    fn snippet_with_pid() {
-        assert!(snippet("u", Some(42)).ends_with("\nexport GCS_PYPI_PID=42\n"));
     }
 
     #[rstest]

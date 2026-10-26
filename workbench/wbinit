@@ -31,13 +31,12 @@ mkdir -p "$state_dir"
 # 1. gcs-pypi. If the port is taken, it is still running from an earlier wbinit since boot.
 if (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null; then
     log "gcs-pypi already listening on $host:$port"
-    snippet=$(gcs-pypi env --addr "$host:$port")
 else
     : "${GCS_PYPI_BUCKET:?set GCS_PYPI_BUCKET=gs://bucket[/prefix]}"
-    # Not `eval "$(...)"`: that would hide a failed start from `set -e`.
-    snippet=$(gcs-pypi --addr "$host:$port" --daemon --log-file "$state_dir/gcs-pypi.log")
+    gcs-pypi --addr "$host:$port" --daemon \
+        --log-file "$state_dir/gcs-pypi.log" --pid-file "$state_dir/gcs-pypi.pid"
 fi
-eval "$snippet"
+eval "$(gcs-pypi env --addr "$host:$port")"
 
 # 2. Dependencies, once.
 if [[ -e "$marker" ]]; then

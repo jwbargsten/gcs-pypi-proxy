@@ -38,9 +38,9 @@ pip / uv ──HTTP──▶ 127.0.0.1:<random>/simple/  (gcs-pypi)
 | Mode | Command |
 |---|---|
 | Wrap a command (recommended) | `gcs-pypi --bucket gs://b/prefix -- <cmd...>` sets `PIP_INDEX_URL` and `UV_DEFAULT_INDEX` for `<cmd>`, then exits with its exit code |
-| Long-running | `gcs-pypi --bucket gs://b/prefix --addr 127.0.0.1:8765` prints the env lines and serves until Ctrl-C |
-| Background | `eval "$(gcs-pypi --bucket gs://b/prefix --daemon)"` returns once the server is ready and exports the env vars plus `GCS_PYPI_PID` in your shell; stop it with `kill $GCS_PYPI_PID` |
-| Point the shell at a running server | `eval "$(gcs-pypi env)"` exports `PIP_INDEX_URL` and `UV_DEFAULT_INDEX` for `127.0.0.1:8765` (the systemd service); `--addr` for another address |
+| Long-running | `gcs-pypi --bucket gs://b/prefix` serves on `127.0.0.1:8765` until Ctrl-C or SIGTERM |
+| Background | `gcs-pypi --bucket gs://b/prefix --daemon` returns once the server is ready and prints its URL; stop it with `kill "$(cat "${TMPDIR:-/tmp}/gcs-pypi.pid")"` (see `--pid-file`) |
+| Point the shell at a running server | `eval "$(gcs-pypi env)"` exports `PIP_INDEX_URL` and `UV_DEFAULT_INDEX` for `127.0.0.1:8765` (the default address, also used by the systemd service); `--addr` for another address |
 | systemd service | see [Running as a systemd service](#running-as-a-systemd-service) |
 
 | Flag / env | Default | |
@@ -49,11 +49,12 @@ pip / uv ──HTTP──▶ 127.0.0.1:<random>/simple/  (gcs-pypi)
 | `--upstream` / `GCS_PYPI_UPSTREAM` | `https://pypi.org/simple/` | `none` disables |
 | `--auth` / `GCS_PYPI_AUTH` | `auto` | `metadata`, `gcloud`, `none` |
 | `--cache-ttl` / `GCS_PYPI_CACHE_TTL` | `60` | seconds the listing is cached |
-| `--addr` / `GCS_PYPI_ADDR` | `127.0.0.1:0` | port 0 = random free port |
+| `--addr` / `GCS_PYPI_ADDR` | `127.0.0.1:8765`; with a command `127.0.0.1:0` | port 0 = random free port; `gcs-pypi env --addr` needs the port the server printed |
 | `--endpoint` / `GCS_PYPI_ENDPOINT` | `https://storage.googleapis.com` | for emulators |
 | `-v` | off | log fetches and upstream redirects |
 | `--daemon` | off | serve in the background (not with a command) |
 | `--log-file` / `GCS_PYPI_LOG_FILE` | `<temp dir>/gcs-pypi.log` | log of the background server; if it fails to start, the error is also printed |
+| `--pid-file` / `GCS_PYPI_PID_FILE` | with `--daemon` `<temp dir>/gcs-pypi.pid`, otherwise none | PID of the server, removed when it stops; starting fails while that process runs |
 
 ## Publishing
 
@@ -106,7 +107,8 @@ gcloud storage cp 'gs://my-pypi/tools/gcs_pypi_proxy-0.2.0-*.whl' wheels/
 pip install --no-index --find-links wheels/ gcs-pypi-proxy==0.2.0
 # or: uv tool install --no-index --find-links wheels/ gcs-pypi-proxy==0.2.0
 
-eval "$(gcs-pypi --bucket gs://my-pypi/packages --daemon)"
+gcs-pypi --bucket gs://my-pypi/packages --daemon
+eval "$(gcs-pypi env)"
 pip install my-private-lib
 ```
 
