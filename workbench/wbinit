@@ -27,16 +27,17 @@ project_dir="${WBINIT_PROJECT_DIR:-$PWD}"
 log() { echo "wbinit: $*" >&2; }
 
 mkdir -p "$state_dir"
+# Shared by start and env, so env points at the server start runs.
+opts=(--addr "$host:$port" --log-file "$state_dir/gcs-pypi.log" --pid-file "$state_dir/gcs-pypi.pid")
 
 # 1. gcs-pypi. If the port is taken, it is still running from an earlier wbinit since boot.
 if (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null; then
     log "gcs-pypi already listening on $host:$port"
 else
     : "${GCS_PYPI_BUCKET:?set GCS_PYPI_BUCKET=gs://bucket[/prefix]}"
-    gcs-pypi --addr "$host:$port" --daemon \
-        --log-file "$state_dir/gcs-pypi.log" --pid-file "$state_dir/gcs-pypi.pid"
+    gcs-pypi start --daemon "${opts[@]}"
 fi
-eval "$(gcs-pypi env --addr "$host:$port")"
+eval "$(gcs-pypi env "${opts[@]}")"
 
 # 2. Dependencies, once.
 if [[ -e "$marker" ]]; then

@@ -1,4 +1,4 @@
-//! `--daemon`: re-run this binary detached in its own session and return once it serves.
+//! `start --daemon`: re-run this binary detached in its own session and return once it serves.
 
 use std::{
     fs::{File, OpenOptions},
@@ -60,7 +60,7 @@ pub fn spawn(log_file: &Path, pid_file: &Path) -> Result<()> {
 
     println!("gcs-pypi: started server at {url}");
     eprintln!(
-        "gcs-pypi: running in background (pid {}), pid file: {}, log: {}",
+        "gcs-pypi: running in background (pid {}; stop it with `gcs-pypi stop`), pid file: {}, log: {}",
         child.id(),
         pid_file.display(),
         log_file.display()

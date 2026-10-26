@@ -5,8 +5,8 @@ PEP 503 index for **pip** and **uv**. It is meant to start right before an insta
 and stop right after.
 
 ```bash
-gcs-pypi --bucket gs://my-pypi/packages -- pip install my-private-lib
-gcs-pypi --bucket gs://my-pypi/packages -- uv sync
+gcs-pypi exec --bucket gs://my-pypi/packages -- pip install my-private-lib
+gcs-pypi exec --bucket gs://my-pypi/packages -- uv sync
 ```
 
 ## How it works
@@ -37,24 +37,38 @@ pip / uv ──HTTP──▶ 127.0.0.1:<random>/simple/  (gcs-pypi)
 
 | Mode | Command |
 |---|---|
-| Wrap a command (recommended) | `gcs-pypi --bucket gs://b/prefix -- <cmd...>` sets `PIP_INDEX_URL` and `UV_DEFAULT_INDEX` for `<cmd>`, then exits with its exit code |
-| Long-running | `gcs-pypi --bucket gs://b/prefix` serves on `127.0.0.1:8765` until Ctrl-C or SIGTERM |
-| Background | `gcs-pypi --bucket gs://b/prefix --daemon` returns once the server is ready and prints its URL; stop it with `kill "$(cat "${TMPDIR:-/tmp}/gcs-pypi.pid")"` (see `--pid-file`) |
-| Point the shell at a running server | `eval "$(gcs-pypi env)"` exports `PIP_INDEX_URL` and `UV_DEFAULT_INDEX` for `127.0.0.1:8765` (the default address, also used by the systemd service); `--addr` for another address |
+| Wrap a command (recommended) | `gcs-pypi exec --bucket gs://b/prefix -- <cmd...>` serves on a free port only while `<cmd>` runs, sets `PIP_INDEX_URL` and `UV_DEFAULT_INDEX` for `<cmd>`, then exits with its exit code |
+| Long-running | `gcs-pypi start --bucket gs://b/prefix` serves on `127.0.0.1:8765` until Ctrl-C, SIGTERM or `gcs-pypi stop` |
+| Background | `gcs-pypi start --bucket gs://b/prefix --daemon` returns once the server is ready and prints its URL |
+| Point the shell at a running server | `eval "$(gcs-pypi env)"` exports `PIP_INDEX_URL` and `UV_DEFAULT_INDEX` |
+| Stop it | `gcs-pypi stop` sends SIGTERM and waits until the server has exited |
 | systemd service | see [Running as a systemd service](#running-as-a-systemd-service) |
+
+All subcommands take the same options, so replacing `start` with `env` or `stop` in a command line
+finds the server that command started. `env` uses a fixed `--addr` as given. Otherwise it reads
+the server's URL from the pid file, which works for a random port too, and falls back to
+`127.0.0.1:8765` (e.g. the systemd service) if no server is recorded there.
+
+```bash
+opts=(--bucket gs://b/prefix --addr 127.0.0.1:0)
+gcs-pypi start --daemon "${opts[@]}"
+eval "$(gcs-pypi env "${opts[@]}")"
+pip install my-private-lib
+gcs-pypi stop "${opts[@]}"
+```
 
 | Flag / env | Default | |
 |---|---|---|
-| `--bucket` / `GCS_PYPI_BUCKET` | — | `gs://bucket[/prefix]` |
+| `--bucket` / `GCS_PYPI_BUCKET` | — | `gs://bucket[/prefix]`, required by `start` and `exec` |
 | `--upstream` / `GCS_PYPI_UPSTREAM` | `https://pypi.org/simple/` | `none` disables |
 | `--auth` / `GCS_PYPI_AUTH` | `auto` | `metadata`, `gcloud`, `none` |
 | `--cache-ttl` / `GCS_PYPI_CACHE_TTL` | `60` | seconds the listing is cached |
-| `--addr` / `GCS_PYPI_ADDR` | `127.0.0.1:8765`; with a command `127.0.0.1:0` | port 0 = random free port; `gcs-pypi env --addr` needs the port the server printed |
+| `--addr` / `GCS_PYPI_ADDR` | `127.0.0.1:8765`; with `exec` `127.0.0.1:0` | port 0 = random free port |
 | `--endpoint` / `GCS_PYPI_ENDPOINT` | `https://storage.googleapis.com` | for emulators |
 | `-v` | off | log fetches and upstream redirects |
-| `--daemon` | off | serve in the background (not with a command) |
+| `--daemon` | off | `start` in the background |
 | `--log-file` / `GCS_PYPI_LOG_FILE` | `<temp dir>/gcs-pypi.log` | log of the background server; if it fails to start, the error is also printed |
-| `--pid-file` / `GCS_PYPI_PID_FILE` | with `--daemon` `<temp dir>/gcs-pypi.pid`, otherwise none | PID of the server, removed when it stops; starting fails while that process runs |
+| `--pid-file` / `GCS_PYPI_PID_FILE` | `$XDG_RUNTIME_DIR/gcs-pypi.pid`, or `<temp dir>/gcs-pypi.pid` without it; with `exec` none | the server's PID (line 1) and URL (line 2), removed when it stops; `env` and `stop` read it, `start` fails while that process runs |
 
 ## Publishing
 
@@ -80,7 +94,7 @@ The `sha256` metadata is optional; md5 works without it.
 Example Dockerfile or startup step:
 
 ```dockerfile
-RUN gcs-pypi --bucket gs://my-pypi/packages -- pip install --no-cache-dir -r requirements.txt
+RUN gcs-pypi exec --bucket gs://my-pypi/packages -- pip install --no-cache-dir -r requirements.txt
 ```
 
 ## Install from a wheel
@@ -107,7 +121,7 @@ gcloud storage cp 'gs://my-pypi/tools/gcs_pypi_proxy-0.2.0-*.whl' wheels/
 pip install --no-index --find-links wheels/ gcs-pypi-proxy==0.2.0
 # or: uv tool install --no-index --find-links wheels/ gcs-pypi-proxy==0.2.0
 
-gcs-pypi --bucket gs://my-pypi/packages --daemon
+gcs-pypi start --bucket gs://my-pypi/packages --daemon
 eval "$(gcs-pypi env)"
 pip install my-private-lib
 ```

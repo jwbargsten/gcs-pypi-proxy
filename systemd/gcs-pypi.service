@@ -10,7 +10,7 @@ UMask=0077
 Type=exec
 SyslogIdentifier=gcs-pypi
 
-ExecStart=/usr/local/bin/gcs-pypi
+ExecStart=/usr/local/bin/gcs-pypi start
 
 # Fixed port, so pip.conf / uv.toml can point at http://127.0.0.1:8765/simple/
 Environment=GCS_PYPI_ADDR=127.0.0.1:8765

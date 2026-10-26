@@ -1,4 +1,9 @@
-//! `--pid-file`: record the serving process's PID, and refuse to start while another one runs.
+//! `--pid-file`: record the serving process's PID and URL, and refuse to start while another one
+//! runs. Like PostgreSQL's postmaster.pid, the PID is the first line, so `env` and `stop` find
+//! the server, including one on a random port.
+//!
+//!   <pid>
+//!   <index url>     (once the server listens)
 
 use std::{
     fs::{self, OpenOptions},
@@ -12,6 +17,14 @@ use anyhow::{Context, Result, bail};
 pub struct PidFile {
     path: PathBuf,
     pid: u32,
+}
+
+/// A running server, as its pid file records it.
+#[derive(Debug, PartialEq)]
+pub struct Server {
+    pub pid: u32,
+    /// None while the server is still starting.
+    pub url: Option<String>,
 }
 
 impl PidFile {
@@ -30,9 +43,10 @@ impl PidFile {
                     });
                 }
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                    if let Some(other) = read(path).filter(|&p| is_running(p)) {
+                    if let Some(other) = running(path) {
                         bail!(
-                            "gcs-pypi is already running (pid {other}, pid file {})",
+                            "gcs-pypi is already running (pid {}, pid file {})",
+                            other.pid,
                             path.display()
                         );
                     }
@@ -46,21 +60,44 @@ impl PidFile {
         }
         bail!("pid file {} keeps reappearing", path.display())
     }
+
+    /// Record the URL the server listens on. Replaces the file in one step, so readers never see
+    /// half of it.
+    pub fn set_url(&self, url: &str) -> Result<()> {
+        let mut tmp = self.path.clone().into_os_string();
+        tmp.push(".tmp");
+        fs::write(&tmp, format!("{}\n{url}\n", self.pid))
+            .and_then(|()| fs::rename(&tmp, &self.path))
+            .with_context(|| format!("writing pid file {}", self.path.display()))
+    }
 }
 
 impl Drop for PidFile {
     fn drop(&mut self) {
-        if read(&self.path) == Some(self.pid) {
+        if read(&self.path).is_some_and(|s| s.pid == self.pid) {
             let _ = fs::remove_file(&self.path);
         }
     }
 }
 
-fn read(path: &Path) -> Option<u32> {
-    fs::read_to_string(path).ok()?.trim().parse().ok()
+/// The server recorded in `path`, if its process still runs.
+pub fn running(path: &Path) -> Option<Server> {
+    read(path).filter(|s| is_running(s.pid))
 }
 
-fn is_running(pid: u32) -> bool {
+fn read(path: &Path) -> Option<Server> {
+    let content = fs::read_to_string(path).ok()?;
+    let mut lines = content.lines();
+    let pid = lines.next()?.trim().parse().ok()?;
+    let url = lines
+        .next()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .map(String::from);
+    Some(Server { pid, url })
+}
+
+pub fn is_running(pid: u32) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return false;
     };
@@ -71,6 +108,15 @@ fn is_running(pid: u32) -> bool {
             || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
 }
 
+pub fn terminate(pid: u32) -> Result<()> {
+    let pid = libc::pid_t::try_from(pid).context("pid out of range")?;
+    // SAFETY: plain syscall; pid comes from a pid file and was just checked to be running.
+    if unsafe { libc::kill(pid, libc::SIGTERM) } == -1 {
+        return Err(io::Error::last_os_error()).with_context(|| format!("stopping pid {pid}"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,11 +125,28 @@ mod tests {
         std::env::temp_dir().join(format!("gcs-pypi-test-{}-{name}.pid", std::process::id()))
     }
 
+    fn me(url: Option<&str>) -> Option<Server> {
+        Some(Server {
+            pid: std::process::id(),
+            url: url.map(String::from),
+        })
+    }
+
     #[test]
     fn writes_and_removes() {
         let path = temp_path("writes");
         let f = PidFile::create(&path).unwrap();
-        assert_eq!(read(&path), Some(std::process::id()));
+        assert_eq!(read(&path), me(None));
+        drop(f);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn records_the_url() {
+        let path = temp_path("url");
+        let f = PidFile::create(&path).unwrap();
+        f.set_url("http://127.0.0.1:1/simple/").unwrap();
+        assert_eq!(running(&path), me(Some("http://127.0.0.1:1/simple/")));
         drop(f);
         assert!(!path.exists());
     }
@@ -100,9 +163,10 @@ mod tests {
     fn replaces_stale() {
         let path = temp_path("stale");
         // Above any real pid_max, so no process has it.
-        fs::write(&path, "999999999\n").unwrap();
+        fs::write(&path, "999999999\nhttp://old/\n").unwrap();
+        assert_eq!(running(&path), None);
         let f = PidFile::create(&path).unwrap();
-        assert_eq!(read(&path), Some(std::process::id()));
+        assert_eq!(read(&path), me(None));
         drop(f);
     }
 
@@ -112,7 +176,7 @@ mod tests {
         let f = PidFile::create(&path).unwrap();
         fs::write(&path, "1\n").unwrap();
         drop(f);
-        assert_eq!(read(&path), Some(1));
+        assert_eq!(read(&path).map(|s| s.pid), Some(1));
         fs::remove_file(&path).unwrap();
     }
 }
