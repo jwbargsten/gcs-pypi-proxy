@@ -117,9 +117,9 @@ same place and pip or uv picks the one that matches the machine. The distributio
 In a running container:
 
 ```bash
-gcloud storage cp 'gs://my-pypi/tools/gcs_pypi_proxy-0.2.0-*.whl' wheels/
-pip install --no-index --find-links wheels/ gcs-pypi-proxy==0.2.0
-# or: uv tool install --no-index --find-links wheels/ gcs-pypi-proxy==0.2.0
+gcloud storage cp 'gs://my-pypi/tools/gcs_pypi_proxy-0.3.0-*.whl' wheels/
+pip install --no-index --find-links wheels/ gcs-pypi-proxy==0.3.0
+# or: uv tool install --no-index --find-links wheels/ gcs-pypi-proxy==0.3.0
 
 gcs-pypi start --bucket gs://my-pypi/packages --daemon
 eval "$(gcs-pypi env)"
